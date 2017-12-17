@@ -20,14 +20,9 @@
 ##############################################################################
 
 import base64
-from unidecode import unidecode
-
-from pyxb.exceptions_ import SimpleFacetValueError, SimpleTypeValueError
-
 from openerp.osv import orm
 from openerp.tools.translate import _
-
-from openerp.addons.l10n_it_fatturapa.bindings.fatturapa_v_1_1 import (
+from openerp.addons.l10n_it_fatturapa.bindings.fatturapa_v_1_2 import (
     FatturaElettronica,
     FatturaElettronicaHeaderType,
     DatiTrasmissioneType,
@@ -50,10 +45,19 @@ from openerp.addons.l10n_it_fatturapa.bindings.fatturapa_v_1_1 import (
     ContattiType,
     DatiPagamentoType,
     DettaglioPagamentoType,
-    AllegatiType
+    AllegatiType,
+    ScontoMaggiorazioneType
 )
 from openerp.addons.l10n_it_fatturapa.models.account import (
     RELATED_DOCUMENT_TYPES)
+import logging
+_logger = logging.getLogger(__name__)
+
+try:
+    from unidecode import unidecode
+    from pyxb.exceptions_ import SimpleFacetValueError, SimpleTypeValueError
+except ImportError as err:
+    _logger.debug(err)
 
 
 class WizardExportFatturapa(orm.TransientModel):
@@ -571,15 +575,21 @@ class WizardExportFatturapa(orm.TransientModel):
                     unidecode(line.uos_id.name)) or None,
                 PrezzoTotale='%.2f' % line.price_subtotal,
                 AliquotaIVA=AliquotaIVA)
+            if line.discount:
+                ScontoMaggiorazione = ScontoMaggiorazioneType(
+                    Tipo='SC',
+                    Percentuale='%.2f' % line.discount
+                )
+                DettaglioLinea.ScontoMaggiorazione.append(ScontoMaggiorazione)
             if aliquota == 0.0:
-                if not line.invoice_line_tax_id[0].non_taxable_nature:
+                if not line.invoice_line_tax_id[0].kind_id.code:
                     raise orm.except_orm(
                         _('Error'),
                         _("No 'nature' field for tax %s") %
                         line.invoice_line_tax_id[0].name)
                 DettaglioLinea.Natura = line.invoice_line_tax_id[
                     0
-                ].non_taxable_nature
+                ].kind_id.code
             if line.admin_ref:
                 DettaglioLinea.RiferimentoAmministrazione = line.admin_ref
             line_no += 1
@@ -588,7 +598,6 @@ class WizardExportFatturapa(orm.TransientModel):
 
             # el.remove(el.find('DataInizioPeriodo'))
             # el.remove(el.find('DataFinePeriodo'))
-            # el.remove(el.find('ScontoMaggiorazione'))
             # el.remove(el.find('Ritenuta'))
             # el.remove(el.find('AltriDatiGestionali'))
 
@@ -610,11 +619,11 @@ class WizardExportFatturapa(orm.TransientModel):
                 Imposta='%.2f' % tax_line.amount
                 )
             if tax.amount == 0.0:
-                if not tax.non_taxable_nature:
+                if not tax.kind_id:
                     raise orm.except_orm(
                         _('Error'),
                         _("No 'nature' field for tax %s") % tax.name)
-                riepilogo.Natura = tax.non_taxable_nature
+                riepilogo.Natura = tax.kind_id.code
                 if not tax.law_reference:
                     raise orm.except_orm(
                         _('Error'),
@@ -752,7 +761,7 @@ class WizardExportFatturapa(orm.TransientModel):
         model_data_obj = self.pool['ir.model.data']
         invoice_obj = self.pool['account.invoice']
 
-        self.fatturapa = FatturaElettronica(versione='1.1')
+        self.fatturapa = FatturaElettronica(versione='FPA12')
         invoice_ids = context.get('active_ids', False)
         partner = self.getPartnerId(cr, uid, invoice_ids, context=context)
 

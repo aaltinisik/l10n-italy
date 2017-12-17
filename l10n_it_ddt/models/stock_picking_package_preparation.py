@@ -17,8 +17,9 @@ class StockPickingCarriageCondition(models.Model):
     _name = "stock.picking.carriage_condition"
     _description = "Carriage Condition"
 
-    name = fields.Char(string='Carriage Condition', required=True)
-    note = fields.Text(string='Note')
+    name = fields.Char(
+        string='Carriage Condition', required=True, translate=True)
+    note = fields.Text(string='Note', translate=True)
 
 
 class StockPickingGoodsDescription(models.Model):
@@ -26,8 +27,9 @@ class StockPickingGoodsDescription(models.Model):
     _name = 'stock.picking.goods_description'
     _description = "Description of Goods"
 
-    name = fields.Char(string='Description of Goods', required=True)
-    note = fields.Text(string='Note')
+    name = fields.Char(
+        string='Description of Goods', required=True, translate=True)
+    note = fields.Text(string='Note', translate=True)
 
 
 class StockPickingTransportationReason(models.Model):
@@ -35,8 +37,9 @@ class StockPickingTransportationReason(models.Model):
     _name = 'stock.picking.transportation_reason'
     _description = 'Reason for Transportation'
 
-    name = fields.Char(string='Reason For Transportation', required=True)
-    note = fields.Text(string='Note')
+    name = fields.Char(
+        string='Reason For Transportation', required=True, translate=True)
+    note = fields.Text(string='Note', translate=True)
 
 
 class StockPickingTransportationMethod(models.Model):
@@ -44,8 +47,9 @@ class StockPickingTransportationMethod(models.Model):
     _name = 'stock.picking.transportation_method'
     _description = 'Method of Transportation'
 
-    name = fields.Char(string='Method of Transportation', required=True)
-    note = fields.Text(string='Note')
+    name = fields.Char(
+        string='Method of Transportation', required=True, translate=True)
+    note = fields.Text(string='Note', translate=True)
 
 
 class StockDdtType(models.Model):
@@ -57,12 +61,16 @@ class StockDdtType(models.Model):
     name = fields.Char(required=True)
     sequence_id = fields.Many2one('ir.sequence', required=True)
     note = fields.Text(string='Note')
+    company_id = fields.Many2one(
+        'res.company', string='Company',
+        default=lambda self: self.env.user.company_id, )
 
 
 class StockPickingPackagePreparation(models.Model):
 
     _inherit = 'stock.picking.package.preparation'
     _rec_name = 'display_name'
+    _order = 'ddt_number desc'
 
     def _default_ddt_type(self):
         return self.env['stock.ddt.type'].search([], limit=1)
@@ -89,6 +97,10 @@ class StockPickingPackagePreparation(models.Model):
     volume = fields.Float('Volume')
     invoice_id = fields.Many2one(
         'account.invoice', string="Invoice", readonly=True)
+    weight_manual = fields.Float(
+        string="Force Weight",
+        help="Fill this field with the value you want to be used as weight. "
+             "Leave empty to let the system to compute it")
 
     @api.onchange('partner_id', 'ddt_type_id')
     def on_change_partner(self):
@@ -112,6 +124,10 @@ class StockPickingPackagePreparation(models.Model):
     @api.multi
     def action_put_in_pack(self):
         for package in self:
+            # ----- Check if package has details
+            if not package.line_ids:
+                raise exceptions.Warning(
+                    _("Impossible to put in pack a package without details"))
             # ----- Assign ddt number if ddt type is set
             if package.ddt_type_id and not package.ddt_number:
                 package.ddt_number = package.ddt_type_id.sequence_id.get(
@@ -147,6 +163,65 @@ class StockPickingPackagePreparation(models.Model):
                                                  date=self.date)
         self.display_name = name
 
+    @api.one
+    @api.depends('package_id',
+                 'package_id.children_ids',
+                 'package_id.ul_id',
+                 'package_id.quant_ids',
+                 'picking_ids',
+                 'picking_ids.move_lines',
+                 'picking_ids.move_lines.quant_ids',
+                 'weight_manual')
+    def _compute_weight(self):
+        res = super(StockPickingPackagePreparation, self)._compute_weight()
+        if not self.package_id:
+            quants = self.env['stock.quant']
+            for picking in self.picking_ids:
+                for line in picking.move_lines:
+                    for quant in line.quant_ids:
+                        if quant.qty >= 0:
+                            quants |= quant
+            weight = sum(l.product_id.weight * l.qty for l in quants)
+            self.net_weight = weight
+            self.weight = weight
+        if self.weight_manual:
+            self.weight = self.weight_manual
+        return res
+
+    @api.multi
+    def create_invoice(self):
+        # ----- Check if sale order related to ddt are invoiced. Show them.
+        invoiced_sale = [
+            picking.sale_id.id
+            for picking in self.picking_ids
+            if picking.sale_id and picking.sale_id.invoice_ids]
+        if invoiced_sale:
+            return {
+                'type': 'ir.actions.act_window',
+                'view_type': 'form',
+                'view_mode': 'tree,form',
+                'res_model': 'sale.order',
+                'target': 'current',
+                'domain': '[("id", "in", {ids})]'.format(ids=invoiced_sale),
+            }
+        # ----- Open wizard to create invoices
+        return {
+            'type': 'ir.actions.act_window',
+            'view_type': 'form',
+            'view_mode': 'form',
+            'res_model': 'ddt.create.invoice',
+            'target': 'new',
+        }
+
+    @api.multi
+    def unlink(self):
+        for ddt in self:
+            if ddt.invoice_id:
+                raise exceptions.Warning(
+                    _("Document {d} has invoice linked".format(
+                        d=ddt.ddt_number)))
+        return super(StockPickingPackagePreparation, self).unlink()
+
 
 class StockPickingPackagePreparationLine(models.Model):
 
@@ -163,5 +238,5 @@ class StockPickingPackagePreparationLine(models.Model):
         if self.invoiceable == 'invoiceable':
             move_data.update({
                 'invoice_state': '2binvoiced',
-                })
+            })
         return move_data

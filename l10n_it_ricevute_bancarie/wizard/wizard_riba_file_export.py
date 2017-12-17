@@ -72,6 +72,7 @@ import base64
 from openerp.osv import fields, orm
 from openerp.tools.translate import _
 import datetime
+import re
 
 
 class RibaFileExport(orm.TransientModel):
@@ -210,9 +211,11 @@ class RibaFileExport(orm.TransientModel):
         name_company = order_obj.config_id.company_id.partner_id.name
         if not credit_bank.iban:
             raise orm.except_orm('Error', _('No IBAN specified'))
-        credit_abi = credit_bank.iban[5:10]
-        credit_cab = credit_bank.iban[10:15]
-        credit_conto = credit_bank.iban[-12:]
+        # remove spaces automatically added by odoo
+        credit_iban = credit_bank.iban.replace(" ", "")
+        credit_abi = credit_iban[5:10]
+        credit_cab = credit_iban[10:15]
+        credit_conto = credit_iban[-12:]
         if not credit_bank.codice_sia:
             raise orm.except_orm(
                 'Error', _('No SIA Code specified for: ') + name_company)
@@ -252,12 +255,18 @@ class RibaFileExport(orm.TransientModel):
             debitor_address = line.partner_id
             debitor_street = debitor_address.street or ''
             debitor_zip = debitor_address.zip or ''
-            if not debit_bank.iban:
+            if debit_bank.bank_abi and debit_bank.bank_cab:
+                debit_abi = debit_bank.bank_abi
+                debit_cab = debit_bank.bank_cab
+            elif debit_bank.iban:
+                debit_iban = debit_bank.iban.replace(" ", "")
+                debit_abi = debit_iban[5:10]
+                debit_cab = debit_iban[10:15]
+            else:
                 raise orm.except_orm(
-                    'Error',
-                    _('No IBAN specified for ') + line.partner_id.name)
-            debit_abi = debit_bank.iban[5:10]
-            debit_cab = debit_bank.iban[10:15]
+                    _('Error'),
+                    _('No IBAN or ABI/CAB specified for ') +
+                    line.partner_id.name)
             debitor_city = debitor_address.city and debitor_address.city.ljust(
                 23)[0:23] or ''
             debitor_province = (
@@ -285,20 +294,22 @@ class RibaFileExport(orm.TransientModel):
                 line.sequence,
                 due_date,
                 line.amount,
-                line.partner_id.name,
+                # using regex we remove chars outside letters, numbers, space,
+                # dot and comma because, special chars cause errors.
+                re.sub(r'[^\w\s,.]+', '', line.partner_id.name)[:60],
                 line.partner_id.vat and line.partner_id.vat[
                     2:] or line.partner_id.fiscalcode,
-                debitor_street,
-                debitor_zip,
-                debitor_city,
+                re.sub(r'[^\w\s,.]+', '', debitor_street)[:30],
+                debitor_zip[:5],
+                debitor_city[:24],
                 debitor_province,
                 debit_abi,
                 debit_cab,
                 (
-                    debit_bank.bank and debit_bank.bank.name or
-                    debit_bank.bank_name),
-                line.partner_id.ref or '',
-                line.invoice_number,
+                    debit_bank.bank and debit_bank.bank.name[:50] or
+                    debit_bank.bank_name[:50]),
+                line.partner_id.ref and line.partner_id.ref[:16] or '',
+                line.invoice_number[:40],
                 line.invoice_date,
             ]
             arrayRiba.append(Riba)
